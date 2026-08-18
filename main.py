@@ -1,112 +1,96 @@
 import json
 import httpx
-from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
+from astrbot.api.tool import register_llm_tool
 
 
-@register("astrbot_plugin_http_client", "YourName", "像Postman一样发起自定义HTTP请求", "1.0.0")
-class HttpClientPlugin(Star):
+@register("astrbot_plugin_http_tool", "YourName", "为AI提供HTTP请求能力的工具插件", "1.0.0")
+class HttpToolPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
 
     async def initialize(self):
-        """插件初始化时可选的异步方法"""
-        logger.info("HTTP Client 插件已加载")
+        logger.info("HTTP Tool 插件已加载")
 
-    @filter.command("http")
-    async def http_request(self, event: AstrMessageEvent):
+    @register_llm_tool(
+        name="http_request",
+        description="向指定的URL发起HTTP请求，支持GET、POST、PUT、PATCH、DELETE方法。可以携带自定义请求头和JSON请求体。",
+        parameters=[
+            {
+                "name": "method",
+                "type": "string",
+                "description": "HTTP方法，可选值：GET, POST, PUT, PATCH, DELETE",
+                "required": True
+            },
+            {
+                "name": "url",
+                "type": "string",
+                "description": "目标URL（完整地址）",
+                "required": True
+            },
+            {
+                "name": "headers",
+                "type": "string",
+                "description": "请求头，JSON格式字符串，例如 {\"Authorization\": \"Bearer token\"}",
+                "required": False
+            },
+            {
+                "name": "body",
+                "type": "string",
+                "description": "请求体，JSON格式字符串，例如 {\"key\": \"value\"}。仅在POST/PUT/PATCH时有效",
+                "required": False
+            }
+        ]
+    )
+    async def http_request(self, method: str, url: str, headers: str = "{}", body: str = "{}") -> str:
         """
-        发起自定义HTTP请求。
-        用法：/http <METHOD> <URL> [headers_json] [body_json]
-        示例：
-          /http GET https://api.github.com
-          /http POST https://httpbin.org/post {"Content-Type":"application/json"} {"key":"value"}
+        AI调用的HTTP请求工具
         """
-        # 解析用户输入
-        parts = event.message_str.strip().split(maxsplit=1)
-        if len(parts) < 2:
-            yield event.plain_result(
-                "❌ 用法错误！\n"
-                "格式：/http <METHOD> <URL> [headers_json] [body_json]\n"
-                "示例：\n"
-                "  /http GET https://api.github.com\n"
-                "  /http POST https://httpbin.org/post {\"Content-Type\":\"application/json\"} {\"key\":\"value\"}"
-            )
-            return
-
-        # 进一步解析参数
-        args = parts[1].split(maxsplit=3)
-        if len(args) < 2:
-            yield event.plain_result("❌ 请提供 METHOD 和 URL")
-            return
-
-        method = args[0].upper()
-        url = args[1]
-        headers = {}
-        body = None
-
-        # 解析可选的 headers（第3个参数）
-        if len(args) >= 3:
-            try:
-                headers = json.loads(args[2])
-            except json.JSONDecodeError:
-                yield event.plain_result(f"❌ headers 格式错误，请传入有效的 JSON：{args[2]}")
-                return
-
-        # 解析可选的 body（第4个参数）
-        if len(args) >= 4:
-            try:
-                body = json.loads(args[3])
-            except json.JSONDecodeError:
-                yield event.plain_result(f"❌ body 格式错误，请传入有效的 JSON：{args[3]}")
-                return
-
-        # 发送请求
         try:
+            headers_dict = json.loads(headers)
+            body_dict = json.loads(body) if body else None
+
             async with httpx.AsyncClient(timeout=30.0) as client:
-                if method == "GET":
-                    response = await client.get(url, headers=headers)
-                elif method == "POST":
-                    response = await client.post(url, json=body, headers=headers)
-                elif method == "PUT":
-                    response = await client.put(url, json=body, headers=headers)
-                elif method == "PATCH":
-                    response = await client.patch(url, json=body, headers=headers)
-                elif method == "DELETE":
-                    response = await client.delete(url, headers=headers)
+                method_upper = method.upper()
+
+                if method_upper == "GET":
+                    resp = await client.get(url, headers=headers_dict)
+                elif method_upper == "POST":
+                    resp = await client.post(url, json=body_dict, headers=headers_dict)
+                elif method_upper == "PUT":
+                    resp = await client.put(url, json=body_dict, headers=headers_dict)
+                elif method_upper == "PATCH":
+                    resp = await client.patch(url, json=body_dict, headers=headers_dict)
+                elif method_upper == "DELETE":
+                    resp = await client.delete(url, headers=headers_dict)
                 else:
-                    yield event.plain_result(f"❌ 不支持的 HTTP 方法：{method}")
-                    return
+                    return f"❌ 不支持的HTTP方法: {method}"
 
-                response.raise_for_status()
+                resp.raise_for_status()
 
-                # 尝试解析响应为 JSON，否则返回纯文本
+                # 尝试解析JSON响应
                 try:
-                    resp_data = response.json()
-                    resp_text = json.dumps(resp_data, ensure_ascii=False, indent=2)
+                    data = resp.json()
+                    response_text = json.dumps(data, ensure_ascii=False, indent=2)
                 except json.JSONDecodeError:
-                    resp_text = response.text
+                    response_text = resp.text
 
-                # 截断过长的响应
-                if len(resp_text) > 1500:
-                    resp_text = resp_text[:1500] + "\n... (截断)"
+                # 截断过长内容
+                if len(response_text) > 2000:
+                    response_text = response_text[:2000] + "\n... (响应过长，已截断)"
 
-                result = (
-                    f"✅ 请求成功！\n"
-                    f"状态码: {response.status_code}\n"
-                    f"响应内容:\n{resp_text}"
-                )
-                yield event.plain_result(result)
+                return f"✅ 请求成功\n状态码: {resp.status_code}\n响应内容:\n{response_text}"
 
         except httpx.TimeoutException:
-            yield event.plain_result("❌ 请求超时，请检查目标服务器是否可达")
+            return "❌ 请求超时，请检查网络或目标服务器"
         except httpx.HTTPStatusError as e:
-            yield event.plain_result(f"❌ HTTP 错误: {e.response.status_code}\n{e.response.text[:500]}")
+            return f"❌ HTTP错误 {e.response.status_code}\n{e.response.text[:500]}"
+        except json.JSONDecodeError as e:
+            return f"❌ 参数JSON解析失败: {str(e)}"
         except Exception as e:
-            logger.error(f"HTTP请求异常: {e}")
-            yield event.plain_result(f"❌ 请求失败: {str(e)}")
+            logger.error(f"HTTP Tool 异常: {e}")
+            return f"❌ 请求失败: {str(e)}"
 
     async def terminate(self):
-        """插件卸载/停用时调用"""
-        logger.info("HTTP Client 插件已卸载")
+        logger.info("HTTP Tool 插件已卸载")
