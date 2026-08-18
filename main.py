@@ -1,11 +1,10 @@
 import json
 import httpx
 from astrbot.api.star import Context, Star, register
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api import logger
-from astrbot.api.tool import register_llm_tool
 
-
-@register("astrbot_plugin_http_tool", "YourName", "为AI提供HTTP请求能力的工具插件", "1.0.0")
+@register("astrbot_plugin_http_tool", "YourName", "HTTP请求工具插件（AI可调用）", "1.0.0")
 class HttpToolPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -13,43 +12,25 @@ class HttpToolPlugin(Star):
     async def initialize(self):
         logger.info("HTTP Tool 插件已加载")
 
-    @register_llm_tool(
-        name="http_request",
-        description="向指定的URL发起HTTP请求，支持GET、POST、PUT、PATCH、DELETE方法。可以携带自定义请求头和JSON请求体。",
-        parameters=[
-            {
-                "name": "method",
-                "type": "string",
-                "description": "HTTP方法，可选值：GET, POST, PUT, PATCH, DELETE",
-                "required": True
-            },
-            {
-                "name": "url",
-                "type": "string",
-                "description": "目标URL（完整地址）",
-                "required": True
-            },
-            {
-                "name": "headers",
-                "type": "string",
-                "description": "请求头，JSON格式字符串，例如 {\"Authorization\": \"Bearer token\"}",
-                "required": False
-            },
-            {
-                "name": "body",
-                "type": "string",
-                "description": "请求体，JSON格式字符串，例如 {\"key\": \"value\"}。仅在POST/PUT/PATCH时有效",
-                "required": False
-            }
-        ]
-    )
-    async def http_request(self, method: str, url: str, headers: str = "{}", body: str = "{}") -> str:
+    @filter.llm_tool(name="http_request")
+    async def http_request(self, event: AstrMessageEvent, method: str, url: str, headers: str = "{}", body: str = "{}"):
         """
-        AI调用的HTTP请求工具
+        向指定的URL发起HTTP请求，支持GET、POST、PUT、PATCH、DELETE方法。
+        
+        AI调用示例：
+            GET请求：method="GET", url="https://api.github.com"
+            POST请求：method="POST", url="https://httpbin.org/post", headers='{"Content-Type":"application/json"}', body='{"name":"test"}'
+        
+        参数说明（这些信息会自动传递给AI，AI会根据用户意图自动生成）：
+            - method (string, 必填): HTTP方法，可选值: GET, POST, PUT, PATCH, DELETE
+            - url (string, 必填): 完整的请求URL
+            - headers (string, 可选): JSON格式的请求头，例如 {"Authorization": "Bearer token"}
+            - body (string, 可选): JSON格式的请求体，仅在 POST/PUT/PATCH 时有效
         """
         try:
-            headers_dict = json.loads(headers)
-            body_dict = json.loads(body) if body else None
+            # 解析headers和body
+            headers_dict = json.loads(headers) if headers else {}
+            body_dict = json.loads(body) if body and body != "{}" else None
 
             async with httpx.AsyncClient(timeout=30.0) as client:
                 method_upper = method.upper()
@@ -76,7 +57,7 @@ class HttpToolPlugin(Star):
                 except json.JSONDecodeError:
                     response_text = resp.text
 
-                # 截断过长内容
+                # 截断过长内容（避免消息爆炸）
                 if len(response_text) > 2000:
                     response_text = response_text[:2000] + "\n... (响应过长，已截断)"
 
